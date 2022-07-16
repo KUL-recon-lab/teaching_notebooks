@@ -187,7 +187,7 @@ class PETAcquisitionModel(LinearSubsetOperator):
                         scalar contamination added to linear forward model
     """
     def __init__(self,
-                 proj: LinearSubsetOperator,
+                 proj: RotationBased2DProjector,
                  attenuation_img: np.ndarray,
                  res_FWHM_mm: float = 5.5,
                  contamination: float = 1e-3,
@@ -237,7 +237,7 @@ class PETAcquisitionModel(LinearSubsetOperator):
 
         return img
 
-    def init_image(self) -> None:
+    def init_image(self) -> np.ndarray:
         img = np.zeros(self.proj.img_shape)
         img[np.where(self.proj.mask)] = 1
 
@@ -249,7 +249,7 @@ class PETAcquisitionModel(LinearSubsetOperator):
 
 class OS_MLEM:
     def __init__(self, emission_sinogram: np.ndarray,
-                 acquisition_model: LinearSubsetOperator) -> None:
+                 acquisition_model: PETAcquisitionModel) -> None:
 
         self.emission_sinogram = emission_sinogram
         self.acquisition_model = acquisition_model
