@@ -48,6 +48,7 @@ def test_images(num_pix: int,
 
 #---------------------------------------------------------------------------------------------------
 
+
 class LinearSubsetOperator(ABC):
     @abstractmethod
     def forward(self, img: np.ndarray) -> np.ndarray:
@@ -65,7 +66,9 @@ class LinearSubsetOperator(ABC):
     def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
         """ adjoint of susbet forward step """
 
+
 #---------------------------------------------------------------------------------------------------
+
 
 class RotationBased2DProjector(LinearSubsetOperator):
     """ 2D Rotation based projector
@@ -80,11 +83,11 @@ class RotationBased2DProjector(LinearSubsetOperator):
                     the pixel size in mm
 
     """
-    def __init__(self, 
-                 num_pix: int, 
-                 num_views: int = 180, 
-                 pix_size_mm: float = 3., 
-                 num_subsets: int =20) -> None:
+    def __init__(self,
+                 num_pix: int,
+                 num_views: int = 180,
+                 pix_size_mm: float = 3.,
+                 num_subsets: int = 20) -> None:
 
         self.num_pix = num_pix
         self.pix_size_mm = pix_size_mm
@@ -245,8 +248,7 @@ class PETAcquisitionModel(LinearSubsetOperator):
 
 
 class OS_MLEM:
-    def __init__(self, 
-                 emission_sinogram: np.ndarray, 
+    def __init__(self, emission_sinogram: np.ndarray,
                  acquisition_model: LinearSubsetOperator) -> None:
 
         self.emission_sinogram = emission_sinogram
@@ -282,9 +284,9 @@ class OS_MLEM:
         self.image[self.fov_inds] /= self.sensitivity_imgs[subset][
             self.fov_inds]
 
-    def run(self, 
-            num_iter: int, 
-            initialize_image: bool = True, 
+    def run(self,
+            num_iter: int,
+            initialize_image: bool = True,
             verbose: bool = False) -> np.ndarray:
         if initialize_image:
             self.initialize_image()
