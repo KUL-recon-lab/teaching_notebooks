@@ -3,16 +3,17 @@
 
 import numpy as np
 from scipy.ndimage import rotate, gaussian_filter
+from abc import ABC, abstractmethod
 
 
-def test_images(num_pix,
-                bg_activity=2.,
-                insert_activity=2.,
-                D0=0.4,
-                D1=0.7,
-                D_insert=0.05,
-                D_arm=0.12,
-                offset_arm=0.43):
+def test_images(num_pix: int,
+                bg_activity: float = 2.,
+                insert_activity: float = 2.,
+                D0: float = 0.4,
+                D1: float = 0.7,
+                D_insert: float = 0.05,
+                D_arm: float = 0.12,
+                offset_arm: float = 0.43) -> tuple[np.ndarray, np.ndarray]:
     """
   create emission and attenuation image for 2D "human ellipsoid phantom"
   """
@@ -47,10 +48,27 @@ def test_images(num_pix,
 
 #---------------------------------------------------------------------------------------------------
 
+class LinearSubsetOperator(ABC):
+    @abstractmethod
+    def forward(self, img: np.ndarray) -> np.ndarray:
+        """ complete forward step """
 
-class RotationBased2DProjector:
-    def __init__(self, num_pix, num_views=180, pix_size_mm=3., num_subsets=20):
-        """ 2D Rotation based projector
+    @abstractmethod
+    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
+        """ subset forward step """
+
+    @abstractmethod
+    def adjoint(self, sino: np.ndarray) -> np.ndarray:
+        """ adjoint of forward step """
+
+    @abstractmethod
+    def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
+        """ adjoint of susbet forward step """
+
+#---------------------------------------------------------------------------------------------------
+
+class RotationBased2DProjector(LinearSubsetOperator):
+    """ 2D Rotation based projector
 
     Parameters
     ----------
@@ -62,6 +80,12 @@ class RotationBased2DProjector:
                     the pixel size in mm
 
     """
+    def __init__(self, 
+                 num_pix: int, 
+                 num_views: int = 180, 
+                 pix_size_mm: float = 3., 
+                 num_subsets: int =20) -> None:
+
         self.num_pix = num_pix
         self.pix_size_mm = pix_size_mm
         self.img_shape = (self.num_pix, self.num_pix)
@@ -102,7 +126,7 @@ class RotationBased2DProjector:
             self.subset_sino_shapes.append(
                 (self.subset_projection_angles[i].shape[0], self.num_pix))
 
-    def forward_subset(self, img, subset):
+    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
         sino = np.zeros(self.subset_sino_shapes[subset])
 
         for i, angle in enumerate(self.subset_projection_angles[subset]):
@@ -111,14 +135,14 @@ class RotationBased2DProjector:
 
         return sino * self.pix_size_mm
 
-    def forward(self, img):
+    def forward(self, img: np.ndarray) -> np.ndarray:
         sino = np.zeros(self.sino_shape)
         for i, sl in enumerate(self.subset_slices):
             sino[sl] = self.forward_subset(img, i)
 
         return sino
 
-    def adjoint_subset(self, sino, subset):
+    def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
         img = np.zeros(self.img_shape)
 
         for i, angle in enumerate(self.subset_projection_angles[subset]):
@@ -127,7 +151,7 @@ class RotationBased2DProjector:
 
         return img * self.pix_size_mm
 
-    def adjoint(self, sino):
+    def adjoint(self, sino: np.ndarray) -> np.ndarray:
         img = np.zeros(self.img_shape)
 
         for i, sl in enumerate(self.subset_slices):
@@ -136,17 +160,11 @@ class RotationBased2DProjector:
         return img
 
 
-#-----------------------------------------------------------------------------------------------
+#---------------------------------------------------------------------------------------------------
 
 
-class PETAcquisitionModel:
-    def __init__(self,
-                 proj,
-                 attenuation_img,
-                 res_FWHM_mm=5.5,
-                 contamination=1e-3,
-                 sensitivity=1.):
-        """ PET data acquisition model
+class PETAcquisitionModel(LinearSubsetOperator):
+    """ PET data acquisition model
 
     Parameters
     ----------
@@ -165,6 +183,13 @@ class PETAcquisitionModel:
     contamination   ... float
                         scalar contamination added to linear forward model
     """
+    def __init__(self,
+                 proj: LinearSubsetOperator,
+                 attenuation_img: np.ndarray,
+                 res_FWHM_mm: float = 5.5,
+                 contamination: float = 1e-3,
+                 sensitivity: float = 1.) -> None:
+
         self.proj = proj
         self.attenuation_img = attenuation_img
 
@@ -181,27 +206,27 @@ class PETAcquisitionModel:
         # sensitivity
         self.sensitivity = sensitivity
 
-    def forward_subset(self, img, subset):
+    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
         sm_img = gaussian_filter(img, self.res_sig_mm)
         return self.sensitivity * self.attenuation_sino[
             self.proj.subset_slices[subset]] * self.proj.forward_subset(
                 sm_img, subset) + self.contamination
 
-    def forward(self, img):
+    def forward(self, img: np.ndarray) -> np.ndarray:
         sino = np.zeros(self.proj.sino_shape)
         for i, sl in enumerate(self.proj.subset_slices):
             sino[sl] = self.forward_subset(img, i)
 
         return sino
 
-    def adjoint_subset(self, sino, subset):
+    def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
         back_img = self.proj.adjoint_subset(
             self.sensitivity *
             self.attenuation_sino[self.proj.subset_slices[subset]] * sino,
             subset)
         return gaussian_filter(back_img, self.res_sig_mm)
 
-    def adjoint(self, sino):
+    def adjoint(self, sino: np.ndarray) -> np.ndarray:
         img = np.zeros(self.proj.img_shape)
 
         for i, sl in enumerate(self.proj.subset_slices):
@@ -209,7 +234,7 @@ class PETAcquisitionModel:
 
         return img
 
-    def init_image(self):
+    def init_image(self) -> None:
         img = np.zeros(self.proj.img_shape)
         img[np.where(self.proj.mask)] = 1
 
@@ -220,7 +245,10 @@ class PETAcquisitionModel:
 
 
 class OS_MLEM:
-    def __init__(self, emission_sinogram, acquisition_model):
+    def __init__(self, 
+                 emission_sinogram: np.ndarray, 
+                 acquisition_model: LinearSubsetOperator) -> None:
+
         self.emission_sinogram = emission_sinogram
         self.acquisition_model = acquisition_model
 
@@ -239,11 +267,11 @@ class OS_MLEM:
         # calculate the FOV indicies
         self.fov_inds = np.where(self.acquisition_model.proj.mask)
 
-    def initialize_image(self):
+    def initialize_image(self) -> None:
         self.image = self.acquisition_model.proj.mask.astype(np.float64)
         self.iteration = 0
 
-    def run_update(self, subset):
+    def run_update(self, subset: int) -> None:
         expectation = self.acquisition_model.forward_subset(self.image, subset)
 
         ratio = self.emission_sinogram[
@@ -254,7 +282,10 @@ class OS_MLEM:
         self.image[self.fov_inds] /= self.sensitivity_imgs[subset][
             self.fov_inds]
 
-    def run(self, num_iter, initialize_image=True, verbose=False):
+    def run(self, 
+            num_iter: int, 
+            initialize_image: bool = True, 
+            verbose: bool = False) -> np.ndarray:
         if initialize_image:
             self.initialize_image()
 
@@ -263,3 +294,5 @@ class OS_MLEM:
                 self.run_update(subset)
                 if verbose:
                     print(f'iteration {(i+1):03} subset {subset:03}', end='\r')
+
+        return self.image
