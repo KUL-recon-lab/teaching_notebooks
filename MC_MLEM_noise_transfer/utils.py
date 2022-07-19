@@ -1,6 +1,7 @@
+""" utilities for OS-MLEM notebook """
 import abc
-import numpy as np
 import math
+import numpy as np
 
 import scipy.ndimage as ndi
 
@@ -8,10 +9,10 @@ import scipy.ndimage as ndi
 def test_images(num_pix: int,
                 bg_activity: float = 2.,
                 insert_activity: float = 2.,
-                D0: float = 0.4,
-                D1: float = 0.7,
-                D_insert: float = 0.05,
-                D_arm: float = 0.12,
+                d_0: float = 0.4,
+                d_1: float = 0.7,
+                d_insert: float = 0.05,
+                d_arm: float = 0.12,
                 offset_arm: float = 0.43) -> tuple[np.ndarray, np.ndarray]:
     """
     create emission and attenuation image for 2D "human ellipsoid phantom"
@@ -22,25 +23,25 @@ def test_images(num_pix: int,
     att_image = np.zeros(image_shape)
 
     x = np.linspace(-0.5, 0.5, num_pix)
-    X0, X1 = np.meshgrid(x, x, indexing='ij')
+    x_0, x_1 = np.meshgrid(x, x, indexing='ij')
 
-    R_ell = np.sqrt((2 * X0 / D0)**2 + (2 * X1 / D1)**2)
-    em_image[R_ell <= 1] = bg_activity
+    r_ell = np.sqrt((2 * x_0 / d_0)**2 + (2 * x_1 / d_1)**2)
+    em_image[r_ell <= 1] = bg_activity
 
-    att_image[R_ell <= 1] = 0.01
+    att_image[r_ell <= 1] = 0.01
 
     # add insert
-    R = np.sqrt(X0**2 + X1**2)
-    em_image[R <= 0.5 * D_insert] = insert_activity
+    R = np.sqrt(x_0**2 + x_1**2)
+    em_image[R <= 0.5 * d_insert] = insert_activity
 
     # add arms
-    R_left_arm = np.sqrt(X0**2 + (X1 - offset_arm)**2)
-    em_image[R_left_arm <= 0.5 * D_arm] = bg_activity
-    att_image[R_left_arm <= 0.5 * D_arm] = 0.01
+    r_left_arm = np.sqrt(x_0**2 + (x_1 - offset_arm)**2)
+    em_image[r_left_arm <= 0.5 * d_arm] = bg_activity
+    att_image[r_left_arm <= 0.5 * d_arm] = 0.01
 
-    R_right_arm = np.sqrt(X0**2 + (X1 + offset_arm)**2)
-    em_image[R_right_arm <= 0.5 * D_arm] = bg_activity
-    att_image[R_right_arm <= 0.5 * D_arm] = 0.01
+    r_right_arm = np.sqrt(x_0**2 + (x_1 + offset_arm)**2)
+    em_image[r_right_arm <= 0.5 * d_arm] = bg_activity
+    att_image[r_right_arm <= 0.5 * d_arm] = 0.01
 
     return em_image, att_image
 
@@ -105,6 +106,7 @@ class InterleavedSubsetSlicer(SubsetSlicer):
         return self._num_subsets
 
     def init_subsets(self) -> None:
+        """ initialize the subset set slices and shapes """
         self._subset_slices = []
         self._subset_shapes = []
 
@@ -117,15 +119,15 @@ class InterleavedSubsetSlicer(SubsetSlicer):
                                         self._num_subsets)
         empty_slice = self._ndim * [slice(None, None, None)]
 
-        for i, v in enumerate(all_views):
+        for view in all_views:
             sl = empty_slice.copy()
-            sl[self._subset_axis] = slice(v, None, self._num_subsets)
+            sl[self._subset_axis] = slice(view, None, self._num_subsets)
 
             self._subset_slices.append(tuple(sl))
 
             sh = list(self._complete_shape)
             sh[self._subset_axis] = math.ceil(
-                (self._complete_shape[self._subset_axis] - v) /
+                (self._complete_shape[self._subset_axis] - view) /
                 self._num_subsets)
             self._subset_shapes.append(tuple(sh))
 
@@ -183,6 +185,7 @@ class AffineSubsetMap(abc.ABC):
         """ adjoint of linear part of subset forward step A_i^T x """
 
     def test_adjoint(self, subset: int = None, rtol: float = 1e-3) -> None:
+        """ test wheter adjoint is really the adjoint of forward """
 
         if subset is not None:
             x = np.random.rand(*self.x_shape)
@@ -236,9 +239,9 @@ class RotationBased2DProjector(Projector):
 
         # setup the a mask for the FOV that can be reconstructed (inner circle)
         x = np.linspace(-num_pixel / 2 + 0.5, num_pixel / 2 - 0.5, num_pixel)
-        X0, X1 = np.meshgrid(x, x, indexing='ij')
-        R = np.sqrt(X0**2 + X1**2)
-        self._mask = (R <= x.max()).astype(float)
+        x_0, x_1 = np.meshgrid(x, x, indexing='ij')
+        r = np.sqrt(x_0**2 + x_1**2)
+        self._mask = (r <= x.max()).astype(float)
 
     @property
     def x_shape(self) -> tuple[int, ...]:
@@ -326,15 +329,18 @@ class RotationBased2DProjector(Projector):
 
 
 class ImageBasedResolutionModel:
-    def __init__(self, res_FWHM: tuple[float, ...],
+    """ class for image-based resolution modeling """
+    def __init__(self, res_fwhm: tuple[float, ...],
                  voxel_size: tuple[float, ...]) -> None:
 
-        self.sigmas = np.array(res_FWHM) / (2.35 * np.array(voxel_size))
+        self.sigmas = np.array(res_fwhm) / (2.35 * np.array(voxel_size))
 
     def forward(self, x):
+        """ forward step of resolution model """
         return ndi.gaussian_filter(x, self.sigmas)
 
     def adjoint(self, y):
+        """ adjoint step of resolution model """
         return ndi.gaussian_filter(y, self.sigmas)
 
 
@@ -342,6 +348,7 @@ class ImageBasedResolutionModel:
 
 
 class PETAcquisitionModel(AffineSubsetMap):
+    """ PET acquisition model """
     def __init__(self,
                  proj: Projector,
                  attenuation_image: np.ndarray,
@@ -434,7 +441,8 @@ class PETAcquisitionModel(AffineSubsetMap):
 #-------------------------------------------------------------------------
 
 
-class OS_MLEM:
+class OSMLEM:
+    """ class for MLEM with ordered subsets """
     def __init__(self, data: np.ndarray, aff_map: AffineSubsetMap) -> None:
 
         self.data = data
@@ -455,11 +463,13 @@ class OS_MLEM:
         self.init_image()
 
     def init_image(self) -> None:
+        """ initialize image and reset iteration counter """
         self.image = np.zeros(self.aff_map.x_shape)
         self.image[self.update_inds] = 1
         self.iteration = 0
 
     def run_update(self, subset: int) -> None:
+        """ run OS-MLEM update on a given subset """
         expectation = self.aff_map.forward_subset(self.image, subset)
 
         subset_slice = self.aff_map.get_subset_slice(subset)
@@ -475,8 +485,12 @@ class OS_MLEM:
             num_iter: int,
             initialize_image: bool = True,
             verbose: bool = False) -> np.ndarray:
+        """ run a number of OS-MLEM iterations """
 
-        for i in range(num_iter):
+        if initialize_image:
+            self.init_image()
+
+        for _ in range(num_iter):
             for subset in range(self.aff_map.num_subsets):
                 self.run_update(subset)
                 if verbose:
