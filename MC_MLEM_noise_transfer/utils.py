@@ -1,9 +1,8 @@
-# TODO: - check adjointness (not perfect yet)
-#       - subset projection and OSEM
-
+import abc
 import numpy as np
-from scipy.ndimage import rotate, gaussian_filter
-from abc import ABC, abstractmethod
+import math
+
+import scipy.ndimage as ndi
 
 
 def test_images(num_pix: int,
@@ -15,286 +14,473 @@ def test_images(num_pix: int,
                 D_arm: float = 0.12,
                 offset_arm: float = 0.43) -> tuple[np.ndarray, np.ndarray]:
     """
-  create emission and attenuation image for 2D "human ellipsoid phantom"
-  """
+    create emission and attenuation image for 2D "human ellipsoid phantom"
+    """
 
-    img_shape = (num_pix, num_pix)
-    em_img = np.zeros(img_shape)
-    att_img = np.zeros(img_shape)
+    image_shape = (num_pix, num_pix)
+    em_image = np.zeros(image_shape)
+    att_image = np.zeros(image_shape)
 
     x = np.linspace(-0.5, 0.5, num_pix)
     X0, X1 = np.meshgrid(x, x, indexing='ij')
 
     R_ell = np.sqrt((2 * X0 / D0)**2 + (2 * X1 / D1)**2)
-    em_img[R_ell <= 1] = bg_activity
+    em_image[R_ell <= 1] = bg_activity
 
-    att_img[R_ell <= 1] = 0.01
+    att_image[R_ell <= 1] = 0.01
 
     # add insert
     R = np.sqrt(X0**2 + X1**2)
-    em_img[R <= 0.5 * D_insert] = insert_activity
+    em_image[R <= 0.5 * D_insert] = insert_activity
 
     # add arms
     R_left_arm = np.sqrt(X0**2 + (X1 - offset_arm)**2)
-    em_img[R_left_arm <= 0.5 * D_arm] = bg_activity
-    att_img[R_left_arm <= 0.5 * D_arm] = 0.01
+    em_image[R_left_arm <= 0.5 * D_arm] = bg_activity
+    att_image[R_left_arm <= 0.5 * D_arm] = 0.01
 
     R_right_arm = np.sqrt(X0**2 + (X1 + offset_arm)**2)
-    em_img[R_right_arm <= 0.5 * D_arm] = bg_activity
-    att_img[R_right_arm <= 0.5 * D_arm] = 0.01
+    em_image[R_right_arm <= 0.5 * D_arm] = bg_activity
+    att_image[R_right_arm <= 0.5 * D_arm] = 0.01
 
-    return em_img, att_img
-
-
-#---------------------------------------------------------------------------------------------------
+    return em_image, att_image
 
 
-class LinearSubsetOperator(ABC):
-    @abstractmethod
-    def forward(self, img: np.ndarray) -> np.ndarray:
-        """ complete forward step """
-
-    @abstractmethod
-    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
-        """ subset forward step """
-
-    @abstractmethod
-    def adjoint(self, sino: np.ndarray) -> np.ndarray:
-        """ adjoint of forward step """
-
-    @abstractmethod
-    def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
-        """ adjoint of susbet forward step """
+#-------------------------------------------------------------------------
 
 
-#---------------------------------------------------------------------------------------------------
+class SubsetSlicer(abc.ABC):
+    """ abstract base class for defines subset slices """
+    @property
+    def complete_shape(self) -> tuple[int, ...]:
+        """ shape of complete data set """
+
+    @property
+    def subset_axis(self) -> int:
+        """ subset axis """
+
+    @property
+    def num_subsets(self) -> int:
+        """ number of subsets """
+
+    @abc.abstractmethod
+    def get_subset_slice(self, subset: int) -> tuple[slice, ...]:
+        """ get the slice of a subset """
+
+    @abc.abstractmethod
+    def get_subset_shape(self, subset: int) -> tuple[int, ...]:
+        """ get the shape of a subset """
 
 
-class RotationBased2DProjector(LinearSubsetOperator):
-    """ 2D Rotation based projector
+#-------------------------------------------------------------------------
 
-    Parameters
-    ----------
 
-    num_pix ... uint 
-                number of pixels (the images to be projected have shape (num_pix, num_pix)
+class InterleavedSubsetSlicer(SubsetSlicer):
+    """ class for interleaved subsets along a given axix """
+    def __init__(self, complete_shape: tuple[int, ...], num_subsets: int,
+                 subset_axis: int):
 
-    pix_size_mm ... float
-                    the pixel size in mm
+        self._complete_shape = complete_shape
+        self._num_subsets = num_subsets
+        self._ndim = len(self._complete_shape)
+        self._subset_axis = subset_axis
 
-    """
+        self.init_subsets()
+
+    @property
+    def complete_shape(self) -> tuple[int, ...]:
+        """ shape of complete data set """
+        return self._complete_shape
+
+    @property
+    def subset_axis(self) -> int:
+        """ subset axis """
+        return self._subset_axis
+
+    @property
+    def num_subsets(self) -> int:
+        """ number of subsets """
+        return self._num_subsets
+
+    def init_subsets(self) -> None:
+        self._subset_slices = []
+        self._subset_shapes = []
+
+        all_views = np.zeros(self._num_subsets, dtype=np.int16)
+
+        # interleave the views to maximize the distance between the subsets
+        if self._num_subsets > 1:
+            all_views[0::2] = np.arange(0, math.ceil(self._num_subsets / 2))
+            all_views[1::2] = np.arange(math.ceil(self._num_subsets / 2),
+                                        self._num_subsets)
+        empty_slice = self._ndim * [slice(None, None, None)]
+
+        for i, v in enumerate(all_views):
+            sl = empty_slice.copy()
+            sl[self._subset_axis] = slice(v, None, self._num_subsets)
+
+            self._subset_slices.append(tuple(sl))
+
+            sh = list(self._complete_shape)
+            sh[self._subset_axis] = math.ceil(
+                (self._complete_shape[self._subset_axis] - v) /
+                self._num_subsets)
+            self._subset_shapes.append(tuple(sh))
+
+    def get_subset_slice(self, subset: int) -> tuple[slice, ...]:
+        """ get the slice of a subset """
+        return self._subset_slices[subset]
+
+    def get_subset_shape(self, subset: int) -> tuple[int, ...]:
+        """ get the shape of a subset """
+        return self._subset_shapes[subset]
+
+
+#-------------------------------------------------------------------------
+
+
+class AffineSubsetMap(abc.ABC):
+    """ abstract base class for linear map y = Ax + b supporting subsets """
+    @property
+    @abc.abstractmethod
+    def x_shape(self) -> tuple[int, ...]:
+        """ shape of array x """
+
+    @property
+    @abc.abstractmethod
+    def y_shape(self) -> tuple[int, ...]:
+        """ shape of array y """
+
+    @property
+    @abc.abstractmethod
+    def num_subsets(self) -> int:
+        """ number of subsets """
+
+    @abc.abstractmethod
+    def get_subset_slice(self, subset: int) -> tuple[slice, ...]:
+        """ return slice for subset """
+
+    @abc.abstractmethod
+    def get_subset_shape(self, subset: int) -> tuple[int, ...]:
+        """ return shape for subset """
+
+    @abc.abstractmethod
+    def forward(self, x: np.ndarray) -> np.ndarray:
+        """ forward step Ax + b """
+
+    @abc.abstractmethod
+    def forward_subset(self, x: np.ndarray, subset: int) -> np.ndarray:
+        """ subset forward step A_i x + b_i """
+
+    @abc.abstractmethod
+    def adjoint(self, y: np.ndarray) -> np.ndarray:
+        """ adjoint of linear part of forward step A^T x """
+
+    @abc.abstractmethod
+    def adjoint_subset(self, y: np.ndarray, subset: int) -> np.ndarray:
+        """ adjoint of linear part of subset forward step A_i^T x """
+
+    def test_adjoint(self, subset: int = None, rtol: float = 1e-3) -> None:
+
+        if subset is not None:
+            x = np.random.rand(*self.x_shape)
+            x_fwd = self.forward_subset(x, subset)
+            y = np.random.rand(*x_fwd.shape)
+            y_back = self.adjoint_subset(y, subset)
+        else:
+            x = np.random.rand(*self.x_shape)
+            y = np.random.rand(*self.y_shape)
+            x_fwd = self.forward(x)
+            y_back = self.adjoint(y)
+
+        return np.isclose((x_fwd * y).sum(), (y_back * x).sum(), rtol=rtol)
+
+
+#-------------------------------------------------------------------------
+
+
+class Projector(AffineSubsetMap):
+    """ abstract base class for line / volume integral projectors """
+    @property
+    @abc.abstractmethod
+    def voxel_size_mm(self) -> tuple[float, ...]:
+        """ shape of array x """
+
+
+#-------------------------------------------------------------------------
+
+
+class RotationBased2DProjector(Projector):
+    """ base class for line / volume integral projectors """
     def __init__(self,
-                 num_pix: int,
-                 num_views: int = 180,
-                 pix_size_mm: float = 3.,
-                 num_subsets: int = 20) -> None:
+                 num_pixel: int,
+                 pixel_size_mm: float,
+                 num_subsets: int = 1,
+                 projection_angles: np.ndarray = None):
 
-        self.num_pix = num_pix
-        self.pix_size_mm = pix_size_mm
-        self.img_shape = (self.num_pix, self.num_pix)
-        self.num_views = num_views
-        self.projection_angles = np.linspace(0,
-                                             180,
-                                             self.num_views,
-                                             endpoint=False)
-        self.sino_shape = (self.num_views, self.num_pix)
-        self.num_subsets = num_subsets
+        if projection_angles is None:
+            self._projection_angles = np.linspace(0, 180, 180, endpoint=False)
+        else:
+            self._projection_angles = projection_angles
+
+        self._image_shape = (num_pixel, num_pixel)
+        self._sinogram_shape = (self._projection_angles.shape[0], num_pixel)
+        self._voxel_size_mm = (pixel_size_mm, pixel_size_mm)
+
+        self._subset_slicer = InterleavedSubsetSlicer(self._sinogram_shape,
+                                                      num_subsets, 0)
 
         self.rotation_kwargs = dict(reshape=False, order=1, prefilter=False)
 
         # setup the a mask for the FOV that can be reconstructed (inner circle)
-        x = np.linspace(-self.num_pix / 2 + 0.5, self.num_pix / 2 - 0.5,
-                        self.num_pix)
+        x = np.linspace(-num_pixel / 2 + 0.5, num_pixel / 2 - 0.5, num_pixel)
         X0, X1 = np.meshgrid(x, x, indexing='ij')
         R = np.sqrt(X0**2 + X1**2)
-        self.mask = (R <= x.max())
+        self._mask = (R <= x.max()).astype(float)
 
-        # setup the subset slices for subset projections
-        self.subset_slices = []
-        self.subset_projection_angles = []
-        self.subset_sino_shapes = []
+    @property
+    def x_shape(self) -> tuple[int, ...]:
+        """ shape of array x """
+        return self._image_shape
 
-        shuffled_views = np.zeros(self.num_subsets, dtype=np.int16)
+    @property
+    def y_shape(self) -> tuple[int, ...]:
+        """ shape of array y """
+        return self._sinogram_shape
 
-        if self.num_subsets > 1:
-            shuffled_views[0::2] = np.arange(0, self.num_subsets // 2)
-            shuffled_views[1::2] = np.arange(self.num_subsets // 2,
-                                             self.num_subsets)
+    @property
+    def num_subsets(self) -> int:
+        """ number of subsets """
+        return self._subset_slicer.num_subsets
 
-        for i, v in enumerate(shuffled_views):
-            self.subset_slices.append(
-                (slice(v, None, num_subsets), slice(None, None, None)))
-            self.subset_projection_angles.append(
-                self.projection_angles[self.subset_slices[i][0]])
-            self.subset_sino_shapes.append(
-                (self.subset_projection_angles[i].shape[0], self.num_pix))
+    @property
+    def voxel_size_mm(self) -> tuple[float, ...]:
+        """ shape of array x """
+        return self._voxel_size_mm
 
-    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
-        sino = np.zeros(self.subset_sino_shapes[subset])
+    @property
+    def mask(self) -> np.ndarray:
+        """ FOV mask """
+        return self._mask
 
-        for i, angle in enumerate(self.subset_projection_angles[subset]):
-            sino[i, ...] = rotate(img, angle,
-                                  **self.rotation_kwargs).sum(axis=0)
+    def get_subset_slice(self, subset: int) -> tuple[slice, ...]:
+        """ return slice for subset """
+        return self._subset_slicer.get_subset_slice(subset)
 
-        return sino * self.pix_size_mm
+    def get_subset_shape(self, subset: int) -> tuple[int, ...]:
+        """ return shape for subset """
+        return self._subset_slicer.get_subset_shape(subset)
 
-    def forward(self, img: np.ndarray) -> np.ndarray:
-        sino = np.zeros(self.sino_shape)
-        for i, sl in enumerate(self.subset_slices):
-            sino[sl] = self.forward_subset(img, i)
+    def forward(self, image: np.ndarray) -> np.ndarray:
+        """ forward step """
+
+        sino = np.zeros(self.y_shape)
+        for subset in range(self.num_subsets):
+            subset_slice = self.get_subset_slice(subset)
+            sino[subset_slice] = self.forward_subset(image, subset)
 
         return sino
 
-    def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
-        img = np.zeros(self.img_shape)
+    def forward_subset(self, image: np.ndarray, subset: int) -> np.ndarray:
+        """ subset forward step """
 
-        for i, angle in enumerate(self.subset_projection_angles[subset]):
-            tmp_img = np.tile(sino[i, :], self.num_pix).reshape(self.img_shape)
-            img += rotate(tmp_img, -angle, **self.rotation_kwargs)
+        subset_shape = self.get_subset_shape(subset)
+        sino = np.zeros(subset_shape)
 
-        return img * self.pix_size_mm
+        subset_slice = self.get_subset_slice(subset)
 
-    def adjoint(self, sino: np.ndarray) -> np.ndarray:
-        img = np.zeros(self.img_shape)
+        masked_image = self._mask * image
 
-        for i, sl in enumerate(self.subset_slices):
-            img += self.adjoint_subset(sino[sl], i)
+        for i, angle in enumerate(self._projection_angles[subset_slice[0]]):
+            sino[i, ...] = ndi.rotate(masked_image, angle,
+                                      **self.rotation_kwargs).sum(axis=0)
 
-        return img
+        return sino * self.voxel_size_mm[0]
+
+    def adjoint(self, sinogram: np.ndarray) -> np.ndarray:
+        """ adjoint of forward step """
+        image = np.zeros(self.x_shape)
+
+        for subset in range(self.num_subsets):
+            subset_slice = self.get_subset_slice(subset)
+            image += self.adjoint_subset(sinogram[subset_slice], subset)
+
+        return image
+
+    def adjoint_subset(self, sinogram: np.ndarray, subset: int) -> np.ndarray:
+        image = np.zeros(self.x_shape)
+
+        subset_slice = self.get_subset_slice(subset)
+
+        for i, angle in enumerate(self._projection_angles[subset_slice[0]]):
+            tmp_image = np.tile(sinogram[i, :],
+                                self.x_shape[0]).reshape(self.x_shape)
+            image += ndi.rotate(tmp_image, -angle, **self.rotation_kwargs)
+
+        return image * self._mask * self.voxel_size_mm[0]
 
 
-#---------------------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------
 
 
-class PETAcquisitionModel(LinearSubsetOperator):
-    """ PET data acquisition model
+class ImageBasedResolutionModel:
+    def __init__(self, res_FWHM: tuple[float, ...],
+                 voxel_size: tuple[float, ...]) -> None:
 
-    Parameters
-    ----------
+        self.sigmas = np.array(res_FWHM) / (2.35 * np.array(voxel_size))
 
-    proj ... forward projector
+    def forward(self, x):
+        return ndi.gaussian_filter(x, self.sigmas)
 
-    attenuation_img ... np.ndarray
-                        the attenuation image, unit [1/mm]
+    def adjoint(self, y):
+        return ndi.gaussian_filter(y, self.sigmas)
 
-    res_FWHM_mm     ... float
-                        FWHM of Gaussian kernel [mm] used to model the resolution
 
-    sensitivity     ... float
-                        scalar sensivity of acquisitiion system
+#-------------------------------------------------------------------------
 
-    contamination   ... float
-                        scalar contamination added to linear forward model
-    """
+
+class PETAcquisitionModel(AffineSubsetMap):
     def __init__(self,
-                 proj: RotationBased2DProjector,
-                 attenuation_img: np.ndarray,
-                 res_FWHM_mm: float = 5.5,
-                 contamination: float = 1e-3,
-                 sensitivity: float = 1.) -> None:
+                 proj: Projector,
+                 attenuation_image: np.ndarray,
+                 contamination_sinogram: np.ndarray,
+                 sensitivity_sinogram: np.ndarray,
+                 resolution_model: ImageBasedResolutionModel = None) -> None:
 
         self.proj = proj
-        self.attenuation_img = attenuation_img
+        self.attenuation_image = attenuation_image
 
         # calculate the attenuation sinogram
-        self.attenuation_sino = np.exp(
-            -self.proj.forward(self.attenuation_img))
-
-        # calculate sigma of the gaussian kernel for resolution modeling
-        self.res_sig_mm = res_FWHM_mm / (2.35 * self.proj.pix_size_mm)
+        self.attenuation_sinogram = np.exp(
+            -self.proj.forward(self.attenuation_image))
 
         # expectatation of flat contamination
-        self.contamination = contamination
+        self.contamination_sinogram = contamination_sinogram
 
         # sensitivity
-        self.sensitivity = sensitivity
+        self.sensitivity_sinogram = sensitivity_sinogram
 
-    def forward_subset(self, img: np.ndarray, subset: int) -> np.ndarray:
-        sm_img = gaussian_filter(img, self.res_sig_mm)
-        return self.sensitivity * self.attenuation_sino[
-            self.proj.subset_slices[subset]] * self.proj.forward_subset(
-                sm_img, subset) + self.contamination
+        # resolution model
+        self.resolution_model = resolution_model
 
-    def forward(self, img: np.ndarray) -> np.ndarray:
-        sino = np.zeros(self.proj.sino_shape)
-        for i, sl in enumerate(self.proj.subset_slices):
-            sino[sl] = self.forward_subset(img, i)
+    @property
+    def x_shape(self) -> tuple[int, ...]:
+        """ shape of array x """
+        return self.proj.x_shape
+
+    @property
+    def y_shape(self) -> tuple[int, ...]:
+        """ shape of array y """
+        return self.proj.y_shape
+
+    @property
+    def num_subsets(self) -> int:
+        """ number of subsets """
+        return self.proj.num_subsets
+
+    def get_subset_slice(self, subset: int) -> tuple[slice, ...]:
+        """ return slice for subset """
+        return self.proj.get_subset_slice(subset)
+
+    def get_subset_shape(self, subset: int) -> tuple[int, ...]:
+        """ return shape for subset """
+        return self.proj.get_subset_shape(subset)
+
+    def forward_subset(self, image: np.ndarray, subset: int) -> np.ndarray:
+
+        if self.resolution_model is not None:
+            image = self.resolution_model.forward(image)
+
+        subset_slice = self.get_subset_slice(subset)
+
+        return self.sensitivity_sinogram[
+            subset_slice] * self.attenuation_sinogram[
+                subset_slice] * self.proj.forward_subset(
+                    image, subset) + self.contamination_sinogram[subset_slice]
+
+    def forward(self, image: np.ndarray) -> np.ndarray:
+        sino = np.zeros(self.y_shape)
+
+        for subset in range(self.num_subsets):
+            subset_slice = self.get_subset_slice(subset)
+            sino[subset_slice] = self.forward_subset(image, subset)
 
         return sino
 
     def adjoint_subset(self, sino: np.ndarray, subset: int) -> np.ndarray:
-        back_img = self.proj.adjoint_subset(
-            self.sensitivity *
-            self.attenuation_sino[self.proj.subset_slices[subset]] * sino,
-            subset)
-        return gaussian_filter(back_img, self.res_sig_mm)
+        subset_slice = self.get_subset_slice(subset)
+
+        back_image = self.proj.adjoint_subset(
+            self.sensitivity_sinogram[subset_slice] *
+            self.attenuation_sinogram[subset_slice] * sino, subset)
+
+        if self.resolution_model is not None:
+            back_image = self.resolution_model.adjoint(back_image)
+
+        return back_image
 
     def adjoint(self, sino: np.ndarray) -> np.ndarray:
-        img = np.zeros(self.proj.img_shape)
+        image = np.zeros(self.x_shape)
 
-        for i, sl in enumerate(self.proj.subset_slices):
-            img += self.adjoint_subset(sino[sl], i)
+        for subset in range(self.num_subsets):
+            subset_slice = self.get_subset_slice(subset)
+            image += self.adjoint_subset(sino[subset_slice], subset)
 
-        return img
-
-    def init_image(self) -> np.ndarray:
-        img = np.zeros(self.proj.img_shape)
-        img[np.where(self.proj.mask)] = 1
-
-        return img
+        return image
 
 
-#-----------------------------------------------------------------------------------------------
+#-------------------------------------------------------------------------
 
 
 class OS_MLEM:
-    def __init__(self, emission_sinogram: np.ndarray,
-                 acquisition_model: PETAcquisitionModel) -> None:
+    def __init__(self, data: np.ndarray, aff_map: AffineSubsetMap) -> None:
 
-        self.emission_sinogram = emission_sinogram
-        self.acquisition_model = acquisition_model
+        self.data = data
+        self.aff_map = aff_map
 
         # calculate the sensivity images
-        self.sensitivity_imgs = []
+        self.sensitivity_imgs = np.zeros((self.aff_map.num_subsets, ) +
+                                         self.aff_map.x_shape)
 
-        for subset in range(self.acquisition_model.proj.num_subsets):
-            ones = np.ones(
-                self.acquisition_model.proj.subset_sino_shapes[subset])
-            tmp = self.acquisition_model.adjoint_subset(ones, subset)
-            self.sensitivity_imgs.append(tmp)
+        for subset in range(self.aff_map.num_subsets):
+            ones = np.ones(self.aff_map.get_subset_shape(subset))
+            self.sensitivity_imgs[subset, ...] = self.aff_map.adjoint_subset(
+                ones, subset)
 
-        # initialize the images
-        self.initialize_image()
+        # indices where all subset have sensitivity > 0
+        self.update_inds = np.where(self.sensitivity_imgs.min(axis=0) > 0)
 
-        # calculate the FOV indicies
-        self.fov_inds = np.where(self.acquisition_model.proj.mask)
+        self.init_image()
 
-    def initialize_image(self) -> None:
-        self.image = self.acquisition_model.proj.mask.astype(np.float64)
+    def init_image(self) -> None:
+        self.image = np.zeros(self.aff_map.x_shape)
+        self.image[self.update_inds] = 1
         self.iteration = 0
 
     def run_update(self, subset: int) -> None:
-        expectation = self.acquisition_model.forward_subset(self.image, subset)
+        expectation = self.aff_map.forward_subset(self.image, subset)
 
-        ratio = self.emission_sinogram[
-            self.acquisition_model.proj.subset_slices[subset]] / expectation
+        subset_slice = self.aff_map.get_subset_slice(subset)
 
-        self.image[self.fov_inds] *= self.acquisition_model.adjoint_subset(
-            ratio, subset)[self.fov_inds]
-        self.image[self.fov_inds] /= self.sensitivity_imgs[subset][
-            self.fov_inds]
+        ratio = self.data[subset_slice] / expectation
+
+        self.image[self.update_inds] *= self.aff_map.adjoint_subset(
+            ratio, subset)[self.update_inds]
+        self.image[self.update_inds] /= self.sensitivity_imgs[subset, ...][
+            self.update_inds]
 
     def run(self,
             num_iter: int,
             initialize_image: bool = True,
             verbose: bool = False) -> np.ndarray:
-        if initialize_image:
-            self.initialize_image()
 
         for i in range(num_iter):
-            for subset in range(self.acquisition_model.proj.num_subsets):
+            for subset in range(self.aff_map.num_subsets):
                 self.run_update(subset)
                 if verbose:
-                    print(f'iteration {(i+1):03} subset {subset:03}', end='\r')
+                    print(
+                        f'iteration {(self.iteration+1):03} subset {subset:03}',
+                        end='\r')
+
+            self.iteration += 1
 
         return self.image
