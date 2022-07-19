@@ -51,14 +51,17 @@ def test_images(num_pix: int,
 class SubsetSlicer(abc.ABC):
     """ abstract base class for defines subset slices """
     @property
+    @abc.abstractmethod
     def complete_shape(self) -> tuple[int, ...]:
         """ shape of complete data set """
 
     @property
+    @abc.abstractmethod
     def subset_axis(self) -> int:
         """ subset axis """
 
     @property
+    @abc.abstractmethod
     def num_subsets(self) -> int:
         """ number of subsets """
 
