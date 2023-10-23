@@ -11,7 +11,7 @@ You can run all notebooks online without installing python on your local machine
 link to Binder above.
 
 
-### Option 1: local installation
+### Option 2: local installation (advanced users)
 
 1. Download and install conda [e.g. here](https://github.com/conda-forge/miniforge) and git [e.g. here](https://git-scm.com/downloads)
 2. Clone this repository 
