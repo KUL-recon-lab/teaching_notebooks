@@ -1,3 +1,11 @@
+"""
+1D Fourier transform demo
+=========================
+
+foo bar
+"""
+
+# %%
 import numpy as np
 import matplotlib.pyplot as plt
 
