@@ -18,7 +18,10 @@ n = 16
 x = np.arange(n)
 k = np.arange(n // 2 + 1)
 
+# gauss filter
 filt = np.exp(-(k**2) / (2 * 2**2))
+# ramp filter
+# filt = k / k.max()
 
 f = np.zeros(n)
 f[1] = 2

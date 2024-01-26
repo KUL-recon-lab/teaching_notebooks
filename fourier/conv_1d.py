@@ -13,10 +13,12 @@ x = np.arange(n)
 sigs = np.array([2, 10, 20])
 
 
-f = np.zeros(n)
-f[n // 4 : (3 * n) // 4] = 1
+# f = np.zeros(n)
+# f[n // 4 : (3 * n) // 4] = 1
+# f += np.random.normal(0, 0.05, n)
 
-f += np.random.normal(0, 0.05, n)
+f = np.cos(8 * np.pi * x / n)
+
 
 # %%
 
@@ -65,6 +67,8 @@ for axx in ax[:-1, :].ravel():
     axx.set_xlabel("location $x$")
 for axx in ax[-1, :].ravel():
     axx.set_xlabel("frequency $k_x$")
+for axx in ax.ravel():
+    axx.grid(ls=":")
 
 fig.tight_layout()
 fig.show()
