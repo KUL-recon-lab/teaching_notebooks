@@ -4,7 +4,6 @@ channels:
   - conda-forge
 
 dependencies:
-  - numpy>=1.21
-  - scipy>=1.7
-  - matplotlib>=3.5
+  - parallelproj>=1.7.3
   - notebook
+  - jupytext
