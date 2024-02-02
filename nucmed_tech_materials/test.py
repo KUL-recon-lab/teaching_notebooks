@@ -10,4 +10,4 @@ import numpy as np
 # %%
 import parallelproj
 
-print(parallelproj.__version__)
+print(parallelproj.cuda_present)
